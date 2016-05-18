@@ -1,2 +1,2 @@
 # simplePyAPNs
-Simple APNS for python within redis and rabbitmq
+Simple APNS for python
