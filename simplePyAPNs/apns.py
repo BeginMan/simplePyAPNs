@@ -156,5 +156,8 @@ class APNSConnection(object):
         return self.get_connection.read(n)
 
     def __del__(self):
+        if self._socket:
+            self._socket.close()
         if self.ssl_sock:
             self.ssl_sock.close()
+        logger.info(" %s APNS connection cloese " % self.__class__.__name__)
