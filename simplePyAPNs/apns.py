@@ -98,21 +98,17 @@ class APNs(object):
 
     def send(self, token=None, payload=None):
         notification = self.init_data(token, payload)
-        is_fail = True
+        # fallback for send error
         has_try_count = 0
-        while is_fail and has_try_count < RETRY_COUNT:
+        for i in range(RETRY_COUNT):
             try:
                 result = self.get_connection().send(notification)
-                is_fail = False
+                return int(result) <= 293 or False
             except Exception as ex:
-                print ex
+                logger.error('send failed: %s' % ex)
                 has_try_count += 1
-                print("APNS send failed, has tried " + str(has_try_count) + " times.")
-
-        if is_fail:
-            return False
-
-        return int(result) <= 293 or False
+                logger.warning("APNS send failed, has tried " + str(has_try_count) + " times.")
+        return False
 
     def feedback(self):
         return self.get_feedback_connection().get_result()
@@ -128,11 +124,12 @@ class APNSConnection(object):
         "feedback_prod": ("feedback.push.apple.com", 2196)
     }
 
-    def __init__(self, cert_file=None, key_file=None, env='push_sandbox'):
+    def __init__(self, cert_file=None, key_file=None, env='push_sandbox', timeout=DEFAULT_CONNECTION_TIMEOUT):
         super(APNSConnection, self).__init__()
         self.cert_file = cert_file
         self.key_file = key_file
         self.env = env
+        self.timeout = timeout
         self.ssl_sock = None
         self._socket = None
         self.server_addr = ()       # tuple address
@@ -141,20 +138,25 @@ class APNSConnection(object):
         if not self.server_addr:
             print self.server_addr
             raise ValueError("Unknown address mapping: {0}".format(self.env))
-        try:
-            logger.info('[*]Connecting %s ...' % self.server_addr[0])
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.ssl_sock = ssl.wrap_socket(
-                sock=self._socket,
-                certfile=self.cert_file,
-                keyfile=self.key_file
-            )
-            self.ssl_sock.connect(self.server_addr)
-            logger.info('[√]connection succeed %s ...' % self.server_addr[0])
-        except socket.timeout:
-            pass
-        except:
-            raise
+
+        logger.info('[*]Connecting %s ...' % self.server_addr[0])
+        # retry when connection timeout
+        for i in range(RETRY_COUNT):
+            try:
+                self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._socket.settimeout(self.timeout)
+                self.ssl_sock = ssl.wrap_socket(
+                    sock=self._socket,
+                    certfile=self.cert_file,
+                    keyfile=self.key_file
+                )
+                self.ssl_sock.connect(self.server_addr)
+                logger.info('[√]connection succeed %s ...' % self.server_addr[0])
+                break
+            except socket.timeout:
+                pass
+            except:
+                raise
         return self.ssl_sock
 
     @property
