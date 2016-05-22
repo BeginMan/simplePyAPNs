@@ -7,10 +7,10 @@ desc..
 import json
 import socket
 import logging
-import struct
 import ssl
 import binascii
 from datetime import datetime
+from struct import pack, unpack
 
 logger = logging.getLogger('simplyAPNs')
 logger.setLevel(logging.DEBUG)
@@ -43,7 +43,7 @@ FEEDBACK_STRUCT_FORMAT = (
 
 
 class Payload(object):
-    def __init__(self, alert, badge=1, sound='default', extra={}):
+    def __init__(self, alert, badge=1, sound='default', extra={}, content_available=False):
         self.alert = alert
         self.badge = badge
         self.sound = sound
@@ -53,12 +53,28 @@ class Payload(object):
                     'badge': self.badge,
                     'sound': self.sound}
         }
+        if content_available:
+            self.default_payload['aps'].update(
+                # support apns content-available
+                # https://developer.xamarin.com/guides/ios/application_fundamentals/backgrounding/part_3_ios_backgrounding_techniques/updating_an_application_in_the_background/
+                {'content-available': 1}
+            )
 
     @property
     def payload(self):
         if self.extra:
             self.default_payload.update({'extra': self.extra})
         return self.default_payload
+
+    def json(self, payload=None):
+        if payload is None:
+            payload = self.payload
+
+        if isinstance(payload, (Payload,)):
+            payload = payload.payload
+
+        return json.dumps(payload, separators=(',', ':'),
+                          ensure_ascii=False).encode('utf-8')
 
     def __repr__(self):
         attrs = ['alert', 'badge', 'sound', 'extra']
@@ -91,14 +107,11 @@ class APNs(object):
         if not token or not payload:
             raise ValueError("need token and payload")
 
-        if isinstance(payload, (Payload,)):
-            payload = payload.payload
-
-        payload = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+        payload = payload.json()
         token = token.replace(' ', '')
         hex_token = binascii.unhexlify(token)
         fmt = ''.join(NOTIFICATION_STRUCT_FORMAT) % len(payload)
-        notification = struct.pack(fmt, 0, 32, hex_token, len(payload), payload)
+        notification = pack(fmt, 0, 32, hex_token, len(payload), payload)
         return notification
 
     def send(self, token=None, payload=None):
@@ -115,6 +128,9 @@ class APNs(object):
                 logger.warning("APNS send failed, has tried " + str(has_try_count) + " times.")
         return False
 
+    def send_multi(self, frame):
+        self.get_connection().send_multi(frame)
+
     def feedback(self):
         return self.get_feedback_connection().get_result()
 
@@ -129,7 +145,8 @@ class APNSConnection(object):
         "feedback_prod": ("feedback.push.apple.com", 2196)
     }
 
-    def __init__(self, cert_file=None, key_file=None, env='push_sandbox', timeout=DEFAULT_CONNECTION_TIMEOUT):
+    def __init__(self, cert_file=None, key_file=None, env='push_sandbox',
+                 timeout=DEFAULT_CONNECTION_TIMEOUT):
         super(APNSConnection, self).__init__()
         self.cert_file = cert_file
         self.key_file = key_file
@@ -172,6 +189,9 @@ class APNSConnection(object):
 
     def send(self, msg):
         return self.get_connection.write(msg)
+
+    def send_multi(self, frame):
+        return self.get_connection.write(str(frame))
 
     def read(self, n=None):
         return self.get_connection.read(n)
@@ -221,10 +241,10 @@ class FeedbackConnection(APNSConnection):
             # print chunk
 
             while len(buf) > 6:
-                token_length = struct.unpack('>H', chunk[4:6])[0]
+                token_length = unpack('>H', chunk[4:6])[0]
                 bytes_to_read = 6 + token_length
                 if len(buf) >= bytes_to_read:
-                    fail_time_unix = struct.unpack('>I', chunk[0:4])[0]
+                    fail_time_unix = unpack('>I', chunk[0:4])[0]
                     fail_time = datetime.utcfromtimestamp(fail_time_unix)
                     token = binascii.b2a_hex(buf[6: bytes_to_read])
                     yield (token, fail_time)
@@ -234,3 +254,61 @@ class FeedbackConnection(APNSConnection):
 
             # fmt = ''.join(FEEDBACK_STRUCT_FORMAT)
             # s = struct.unpack(fmt, chunk)
+
+class Frame(object):
+    """
+    The Binary Interface and Notification Format
+    multiple notifications
+    ref: https://developer.apple.com/library/ios/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/Appendixes/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH106-SW12
+    """
+    def __init__(self):
+        self.frame_data = bytearray()
+
+    def add_item(self, token_hex, payload, identifier,
+                 expiration, priority):
+        """add item to frame data"""
+        item_len = 0
+        self.frame_data.extend('\2' + pack('>I', item_len))
+
+        # Item ID 1, Item Name: Device token
+        token_bin = binascii.a2b_hex(token_hex)
+        token_length_bin = pack('>H', len(token_bin))
+        token_item = '\1' + token_length_bin + token_bin
+        self.frame_data.extend(token_item)
+        item_len += len(token_item)
+
+        # Item ID 2, Item name: Payload
+        payload_json = payload.json()
+        payload_length_bin = pack('>H', len(payload_json))
+        payload_item = '\2' + payload_length_bin + payload_json
+        self.frame_data.extend(payload_item)
+        item_len += len(payload_item)
+
+        # Item ID 3, Item name: Notification identifier
+        identifier_bin = pack('>I', identifier)
+        identifier_length_bin = pack('>H', len(identifier_bin))
+        identifier_item = '\3' + identifier_length_bin + identifier_bin
+        self.frame_data.extend(identifier_item)
+        item_len += len(identifier_item)
+
+        # Item ID 4, Item name: Expiration date
+        expiry_bin = pack('>I', expiration)
+        expiry_length_bin = pack('>H', len(expiry_bin))
+        expiry_item = '\4' + expiry_length_bin + expiry_bin
+        self.frame_data.extend(expiry_item)
+        item_len += len(expiry_item)
+
+        # Item ID 5, Item name: Priority
+        priority_bin = pack('>B', priority)
+        priority_length_bin = pack('>H', len(priority_bin))
+        priority_item = '\5' + priority_length_bin + priority_bin
+        self.frame_data.extend(priority_item)
+        item_len += len(priority_item)
+
+        self.frame_data[-item_len-4: -item_len] = pack('>I', item_len)
+
+    def __str__(self):
+        return str(self.frame_data)
+
+
+
