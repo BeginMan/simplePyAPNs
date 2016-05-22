@@ -3,10 +3,10 @@ Simple APNS for python
 
 # Usage
 
-    from apns import Payload, APNs
+[demo.py](https://github.com/BeginMan/simplePyAPNs/blob/master/simplePyAPNs/demo.py)
 
-    token = '7bbfac9882c5949ab62bf8ca9a7878d90aa45f091df4392cde01c701c9b7bb40'
+# Reference
 
-    payload = Payload('test for simplePyAPNs', extra={"name": "BeginMan"})
-    apns = APNs('newfile.crt.pem', 'newfile.key.pem', env='push_prod')
-    apns.send(token, payload)
+- [PyAPNs](https://github.com/djacobs/PyAPNs)
+- [iOS Developer Libary](https://developer.apple.com/library/ios/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/Appendixes/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH106-SW12)
+
